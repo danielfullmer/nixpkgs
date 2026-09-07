@@ -107,7 +107,12 @@ let
       llvmPackages.stdenv
     else
       originalStdenv;
-  inherit (cudaPackages) cudatoolkit nccl;
+  inherit (cudaPackages) cudatoolkit;
+  # nccl is only used when building with CUDA support, and it is not available
+  # on all platforms (e.g. pre-Thor Jetson devices, cf. the platformAssertions
+  # of cudaPackages.nccl). Only pull it in when it is actually usable
+  # C.f. useSystemNccl in python3Packages.torch.
+  useNccl = cudaSupport && cudaPackages.nccl.meta.available;
   # use compatible cuDNN (https://www.tensorflow.org/install/source#gpu)
   # cudaPackages.cudnn led to this:
   # https://github.com/tensorflow/tensorflow/issues/60398
@@ -417,7 +422,9 @@ let
       TF_NEED_MPI = tfFeature cudaSupport;
 
       TF_NEED_CUDA = tfFeature cudaSupport;
-      TF_CUDA_PATHS = lib.optionalString cudaSupport "${cudatoolkitDevMerged},${cudnnMerged},${lib.getLib nccl}";
+      TF_CUDA_PATHS = lib.optionalString cudaSupport (
+        cudatoolkitDevMerged + "," + cudnnMerged + lib.optionalString useNccl ("," + lib.getLib nccl)
+      );
       TF_CUDA_COMPUTE_CAPABILITIES = lib.concatStringsSep "," cudaCapabilities;
 
       # Needed even when we override stdenv: e.g. for ar
@@ -671,11 +678,13 @@ buildPythonPackage {
 
   nativeBuildInputs = lib.optionals cudaSupport [ addDriverRunpath ];
 
-  postFixup = lib.optionalString cudaSupport ''
+  postFixup = let
+    ncclRpath = lib.optionalString useNccl "${lib.getLib nccl}/lib:";
+  in lib.optionalString cudaSupport ''
     find $out -type f \( -name '*.so' -or -name '*.so.*' \) | while read lib; do
       addDriverRunpath "$lib"
 
-      patchelf --set-rpath "${cudatoolkit}/lib:${cudatoolkit.lib}/lib:${cudnnMerged}/lib:${lib.getLib nccl}/lib:$(patchelf --print-rpath "$lib")" "$lib"
+      patchelf --set-rpath "${cudatoolkit}/lib:${cudatoolkit.lib}/lib:${cudnnMerged}/lib:${ncclRpath}$(patchelf --print-rpath "$lib")" "$lib"
     done
   '';
 
